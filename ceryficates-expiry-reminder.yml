@@ -1,0 +1,132 @@
+name: Credential expiry reminder
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      force_days_left:
+        description: "Optional test override, e.g. 30 / 14 / 7"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: credential-expiry-reminder
+  cancel-in-progress: false
+
+jobs:
+  check-credential-expiry:
+    runs-on: ubuntu-latest
+
+    env:
+      EXPIRY_DATE: ${{ vars.CREDENTIAL_EXPIRATION_DATE }}
+      REPO: ${{ github.repository }}
+      FORCE_DAYS_LEFT: ${{ github.event.inputs.force_days_left }}
+
+    steps:
+      - name: Validate expiry date variable
+        shell: bash
+        run: |
+          if [ -z "$EXPIRY_DATE" ]; then
+            echo "CREDENTIAL_EXPIRATION_DATE variable is empty or missing"
+            exit 1
+          fi
+
+          echo "Configured expiry date: $EXPIRY_DATE"
+
+      - name: Calculate days until expiry
+        id: expiry
+        shell: bash
+        run: |
+          if [ -n "$FORCE_DAYS_LEFT" ]; then
+            echo "Using manual override for test: $FORCE_DAYS_LEFT"
+            echo "days_left=$FORCE_DAYS_LEFT" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          EXPIRY_TS=$(date -d "$EXPIRY_DATE" +%s)
+          NOW_TS=$(date -u +%s)
+          DIFF_SEC=$((EXPIRY_TS - NOW_TS))
+          DIFF_DAYS=$((DIFF_SEC / 86400))
+
+          echo "days_left=$DIFF_DAYS" >> "$GITHUB_OUTPUT"
+          echo "Days until expiry: $DIFF_DAYS"
+
+      - name: Decide whether reminder is needed
+        id: reminder
+        shell: bash
+        run: |
+          DAYS_LEFT="${{ steps.expiry.outputs.days_left }}"
+
+          if [ "$DAYS_LEFT" = "30" ] || [ "$DAYS_LEFT" = "14" ] || [ "$DAYS_LEFT" = "7" ]; then
+            echo "send_reminder=true" >> "$GITHUB_OUTPUT"
+            echo "Reminder should be sent"
+          else
+            echo "send_reminder=false" >> "$GITHUB_OUTPUT"
+            echo "No reminder needed today"
+          fi
+
+      - name: Check if reminder issue already exists
+        if: steps.reminder.outputs.send_reminder == 'true'
+        id: existing_issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TITLE="Credential expiry reminder"
+
+          ISSUE_NUMBER=$(gh issue list \
+            --repo "$REPO" \
+            --state open \
+            --search "$TITLE in:title" \
+            --json number,title \
+            --jq '.[] | select(.title == "'"$TITLE"'") | .number' \
+            | head -n 1)
+
+          if [ -n "$ISSUE_NUMBER" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "Open issue already exists: #$ISSUE_NUMBER"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No open reminder issue found"
+          fi
+
+      - name: Create reminder issue
+        if: steps.reminder.outputs.send_reminder == 'true' && steps.existing_issue.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          DAYS_LEFT="${{ steps.expiry.outputs.days_left }}"
+
+          gh issue create \
+            --repo "$REPO" \
+            --title "Credential expiry reminder" \
+            --body "A credential, secret, or certificate expires in **$DAYS_LEFT days** on **$EXPIRY_DATE**.
+
+Please rotate or renew it before expiry.
+
+Checklist
+- identify the affected credential, secret, or certificate
+- update the stored value if needed
+- verify authentication or access still works
+- verify related workflows or automations are working correctly
+- confirm the new expiration date has been recorded"
+
+      - name: Add comment to existing reminder issue
+        if: steps.reminder.outputs.send_reminder == 'true' && steps.existing_issue.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          DAYS_LEFT="${{ steps.expiry.outputs.days_left }}"
+          ISSUE_NUMBER="${{ steps.existing_issue.outputs.issue_number }}"
+
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "$REPO" \
+            --body "Reminder: a credential, secret, or certificate expires in **$DAYS_LEFT days** on **$EXPIRY_DATE**."
