@@ -1,5 +1,5 @@
 # credential-expiry-reminder
-Private repo for testing GitHub Actions expiry reminder workflows
+Public repo for testing GitHub Actions expiry reminder workflows
 
 This repository is used to test and validate GitHub Actions workflows that monitor expiration dates for secrets, certificates, or other time-sensitive credentials.
 
