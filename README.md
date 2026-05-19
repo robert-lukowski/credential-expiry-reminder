@@ -11,3 +11,6 @@ Scope of testing:
 - triggering reminders at defined thresholds
 - creating GitHub issues without duplicates
 - validating manual and scheduled workflow execution
+
+
+QL Code scanning added 
